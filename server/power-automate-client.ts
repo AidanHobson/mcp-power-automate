@@ -22,6 +22,7 @@ import {
 import { getLatestCaptureDiagnostic, getLatestCaptureDiagnosticForFlow } from './capture-diagnostics-store.js';
 import { getCapturedSession, listCapturedSessions } from './captured-sessions-store.js';
 import { hasManageSolutionsTokens } from './dataverse-client.js';
+import { computeFlowBaseHash } from './flow-base-hash.js';
 import { getFlowCatalogForEnv, saveFlowCatalog } from './flow-catalog-store.js';
 import { getFlowSnapshot, getFlowSnapshotForFlow } from './flow-snapshot-store.js';
 import { getLastRun, getLastRunForFlow, saveLastRun } from './last-run-store.js';
@@ -718,12 +719,29 @@ const fetchLiveNormalizedFlow = async (session: TargetSession) => {
 };
 
 interface FlowReadOrigin {
+  baseHash: string;
   fromSnapshot: boolean;
   snapshotCapturedAt: string | null;
   warning?: string;
 }
 
-const LIVE_READ_ORIGIN: FlowReadOrigin = { fromSnapshot: false, snapshotCapturedAt: null };
+const createFlowBaseMismatchError = ({ currentBaseHash, expectedBaseHash }: { currentBaseHash: string; expectedBaseHash: string }) =>
+  new PowerAutomateError({
+    code: 'FLOW_BASE_MISMATCH',
+    details: { currentBaseHash, expectedBaseHash },
+    message:
+      'Nothing was saved: the current flow no longer matches the version this edit was built from (expectedBaseHash differs from the live flow). Saving would overwrite newer changes. Call get_flow again, rebuild the edit on that result, and pass its baseHash.',
+  });
+
+const assertExpectedBase = (before: NormalizedFlow, expectedBaseHash: string | undefined) => {
+  if (!expectedBaseHash) return;
+
+  const currentBaseHash = computeFlowBaseHash(before.flow);
+
+  if (currentBaseHash !== expectedBaseHash) {
+    throw createFlowBaseMismatchError({ currentBaseHash, expectedBaseHash });
+  }
+};
 
 const describeError = (error: unknown) => ({
   code: error instanceof PowerAutomateError ? error.code : null,
@@ -753,7 +771,11 @@ const createStaleSnapshotError = ({
 // Live read first; fall back to the browser-captured snapshot only when it is at least as new as the last saved update.
 const fetchCurrentNormalizedFlow = async (session: TargetSession): Promise<{ flow: NormalizedFlow; origin: FlowReadOrigin }> => {
   try {
-    return { flow: await fetchLiveNormalizedFlow(session), origin: LIVE_READ_ORIGIN };
+    const liveFlow = await fetchLiveNormalizedFlow(session);
+    return {
+      flow: liveFlow,
+      origin: { baseHash: computeFlowBaseHash(liveFlow.flow), fromSnapshot: false, snapshotCapturedAt: null },
+    };
   } catch (liveReadError) {
     const snapshot = getFlowSnapshotForFlow({ envId: session.envId, flowId: session.flowId });
 
@@ -767,9 +789,11 @@ const fetchCurrentNormalizedFlow = async (session: TargetSession): Promise<{ flo
       throw createStaleSnapshotError({ lastUpdateCapturedAt, liveReadError, snapshotCapturedAt: snapshot.capturedAt });
     }
 
+    const snapshotFlow = normalizeSnapshot(snapshot);
     return {
-      flow: normalizeSnapshot(snapshot),
+      flow: snapshotFlow,
       origin: {
+        baseHash: computeFlowBaseHash(snapshotFlow.flow),
         fromSnapshot: true,
         snapshotCapturedAt: snapshot.capturedAt,
         warning: `This is a browser snapshot captured ${snapshot.capturedAt}, not a live read. It may miss changes made since then; apply_flow_update requires a live read and will not save until the flow page is reopened.`,
@@ -1096,9 +1120,10 @@ const persistLastUpdate = async ({ after, before }: { after: NormalizedFlow; bef
   return lastUpdate;
 };
 
-export const previewFlowUpdate = async ({ displayName, flow, target }: UpdateFlowInput) => {
+export const previewFlowUpdate = async ({ displayName, expectedBaseHash, flow, target }: UpdateFlowInput) => {
   const session = ensureTargetSession(target);
   const { flow: before, origin } = await fetchCurrentNormalizedFlow(session);
+  assertExpectedBase(before, expectedBaseHash);
   const after = buildProposedFlow({ before, displayName, flow });
 
   return {
@@ -1197,14 +1222,17 @@ const createLiveReadUnavailableError = ({ liveReadError, session }: { liveReadEr
     retryable: true,
   });
 
-export const applyFlowUpdate = async ({ displayName, flow, target }: UpdateFlowInput) => {
+export const applyFlowUpdate = async ({ displayName, expectedBaseHash, flow, target }: UpdateFlowInput) => {
   const session = ensureTargetSession(target);
+  let liveFlow: NormalizedFlow;
 
   try {
-    await fetchLiveNormalizedFlow(session);
+    liveFlow = await fetchLiveNormalizedFlow(session);
   } catch (liveReadError) {
     throw createLiveReadUnavailableError({ liveReadError, session });
   }
+
+  assertExpectedBase(liveFlow, expectedBaseHash);
 
   try {
     return await updateCurrentFlowModern(session, { displayName, flow });

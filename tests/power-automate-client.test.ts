@@ -431,3 +431,113 @@ describe('snapshot fallback safety', () => {
     expect(updateStore.getLastUpdate()).toBeNull();
   });
 });
+
+describe('expected base check', () => {
+  const proposedFlow = {
+    connectionReferences: {},
+    definition: updatedFlowResponse.properties.definition,
+  };
+
+  const setupTarget = async () => {
+    const sessionStore = await import('../server/session-store.js');
+    const targetStore = await import('../server/active-target-store.js');
+    await sessionStore.saveSession(validSession);
+    await targetStore.saveActiveTarget(activeTarget);
+  };
+
+  const stubFlowService = (currentFlowResponse: typeof baseFlowResponse) => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) =>
+      init?.method === 'PATCH' ? createJsonResponse(updatedFlowResponse) : createJsonResponse(currentFlowResponse),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  const countPatches = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH').length;
+
+  const editedElsewhereResponse = {
+    properties: {
+      ...baseFlowResponse.properties,
+      definition: {
+        actions: { Compose: { inputs: 'edited in the designer', type: 'Compose' } },
+        triggers: {},
+      },
+    },
+  };
+
+  it('returns a base hash from get_flow and preview_flow_update', async () => {
+    await setupTarget();
+    const client = await import('../server/power-automate-client.js');
+    stubFlowService(baseFlowResponse);
+
+    const current = await client.getCurrentFlow();
+    const preview = await client.previewFlowUpdate({ flow: proposedFlow });
+
+    expect(current.baseHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(preview.baseHash).toBe(current.baseHash);
+  });
+
+  it('saves when expectedBaseHash matches the live flow', async () => {
+    await setupTarget();
+    const client = await import('../server/power-automate-client.js');
+    const fetchMock = stubFlowService(baseFlowResponse);
+    const { baseHash } = await client.getCurrentFlow();
+
+    const result = await client.applyFlowUpdate({ expectedBaseHash: baseHash, flow: proposedFlow });
+
+    expect(result.flow.displayName).toBe('Flow B');
+    expect(countPatches(fetchMock)).toBe(1);
+  });
+
+  it('refuses apply and preview without saving when the live flow changed since the base was read', async () => {
+    await setupTarget();
+    const updateStore = await import('../server/update-history-store.js');
+    const client = await import('../server/power-automate-client.js');
+    stubFlowService(baseFlowResponse);
+    const { baseHash } = await client.getCurrentFlow();
+    const fetchMock = stubFlowService(editedElsewhereResponse);
+
+    const mismatch = {
+      code: 'FLOW_BASE_MISMATCH',
+      details: { expectedBaseHash: baseHash },
+      retryable: false,
+    };
+
+    await expect(client.previewFlowUpdate({ expectedBaseHash: baseHash, flow: proposedFlow })).rejects.toMatchObject(mismatch);
+    await expect(client.applyFlowUpdate({ expectedBaseHash: baseHash, flow: proposedFlow })).rejects.toMatchObject(mismatch);
+    expect(countPatches(fetchMock)).toBe(0);
+    expect(updateStore.getLastUpdate()).toBeNull();
+  });
+
+  it('blocks an edit built on a snapshot once a live read shows different content', async () => {
+    await setupTarget();
+    const snapshotStore = await import('../server/flow-snapshot-store.js');
+    const client = await import('../server/power-automate-client.js');
+    await snapshotStore.saveFlowSnapshot({
+      capturedAt: '2026-04-01T00:10:00.000Z',
+      displayName: 'Flow A',
+      envId: 'Default-123',
+      flow: { connectionReferences: {}, definition: { actions: { Old: { inputs: 'old', type: 'Compose' } }, triggers: {} } },
+      flowId: 'flow-a',
+      source: 'xhr-response',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => createJsonResponse({ error: { code: 'Unauthorized' } }, 401)));
+    const snapshotRead = await client.getCurrentFlow();
+    expect(snapshotRead.fromSnapshot).toBe(true);
+
+    const fetchMock = stubFlowService(baseFlowResponse);
+
+    await expect(
+      client.applyFlowUpdate({ expectedBaseHash: snapshotRead.baseHash, flow: proposedFlow }),
+    ).rejects.toMatchObject({ code: 'FLOW_BASE_MISMATCH' });
+    expect(countPatches(fetchMock)).toBe(0);
+  });
+
+  it('rejects a blank expectedBaseHash at the schema boundary', async () => {
+    const { updateFlowInputSchema } = await import('../server/schemas.js');
+
+    expect(updateFlowInputSchema.safeParse({ expectedBaseHash: '  ', flow: proposedFlow }).success).toBe(false);
+    expect(updateFlowInputSchema.safeParse({ flow: proposedFlow }).success).toBe(true);
+  });
+});

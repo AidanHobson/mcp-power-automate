@@ -27,7 +27,7 @@ const summarizeFlowForHistory = (normalizedFlow: NormalizedFlow) => {
   };
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+export const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 const areEqual = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);

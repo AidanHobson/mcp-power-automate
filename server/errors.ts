@@ -7,6 +7,7 @@ export type PowerAutomateErrorCode =
   | 'DATAVERSE_TOKEN_MISSING'
   | 'NO_SESSION'
   | 'NO_TARGET'
+  | 'FLOW_BASE_MISMATCH'
   | 'FLOW_NOT_FOUND'
   | 'LEGACY_TOKEN_MISSING'
   | 'LIVE_READ_UNAVAILABLE'
