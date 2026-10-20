@@ -510,6 +510,21 @@ describe('expected base check', () => {
     expect(updateStore.getLastUpdate()).toBeNull();
   });
 
+  it('refuses apply when the flow was only renamed since the base was read', async () => {
+    await setupTarget();
+    const client = await import('../server/power-automate-client.js');
+    stubFlowService(baseFlowResponse);
+    const { baseHash } = await client.getCurrentFlow();
+    const fetchMock = stubFlowService({
+      properties: { ...baseFlowResponse.properties, displayName: 'Flow A (renamed in designer)' },
+    });
+
+    await expect(client.applyFlowUpdate({ expectedBaseHash: baseHash, flow: proposedFlow })).rejects.toMatchObject({
+      code: 'FLOW_BASE_MISMATCH',
+    });
+    expect(countPatches(fetchMock)).toBe(0);
+  });
+
   it('blocks an edit built on a snapshot once a live read shows different content', async () => {
     await setupTarget();
     const snapshotStore = await import('../server/flow-snapshot-store.js');

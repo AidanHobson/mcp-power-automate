@@ -16,12 +16,18 @@ const toCanonicalJson = (value: unknown): string => {
   return JSON.stringify(value) ?? 'null';
 };
 
-// Content fingerprint of the flow body a caller edited from. Key order is ignored so live API reads and browser
-// snapshots of the same flow hash identically.
+// Fingerprint of the flow a caller edited from: display name plus flow body. Key order is ignored so live API reads
+// and browser snapshots of the same flow hash identically; a missing display name hashes as an empty one.
 export const computeFlowBaseHash = ({
-  connectionReferences,
-  definition,
+  displayName,
+  flow: { connectionReferences, definition },
 }: {
-  connectionReferences: Record<string, unknown>;
-  definition: Record<string, unknown>;
-}): string => createHash('sha256').update(toCanonicalJson({ connectionReferences, definition })).digest('hex');
+  displayName?: string;
+  flow: {
+    connectionReferences: Record<string, unknown>;
+    definition: Record<string, unknown>;
+  };
+}): string =>
+  createHash('sha256')
+    .update(toCanonicalJson({ connectionReferences, definition, displayName: displayName ?? '' }))
+    .digest('hex');

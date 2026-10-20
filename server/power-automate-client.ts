@@ -736,7 +736,7 @@ const createFlowBaseMismatchError = ({ currentBaseHash, expectedBaseHash }: { cu
 const assertExpectedBase = (before: NormalizedFlow, expectedBaseHash: string | undefined) => {
   if (!expectedBaseHash) return;
 
-  const currentBaseHash = computeFlowBaseHash(before.flow);
+  const currentBaseHash = computeFlowBaseHash(before);
 
   if (currentBaseHash !== expectedBaseHash) {
     throw createFlowBaseMismatchError({ currentBaseHash, expectedBaseHash });
@@ -774,7 +774,7 @@ const fetchCurrentNormalizedFlow = async (session: TargetSession): Promise<{ flo
     const liveFlow = await fetchLiveNormalizedFlow(session);
     return {
       flow: liveFlow,
-      origin: { baseHash: computeFlowBaseHash(liveFlow.flow), fromSnapshot: false, snapshotCapturedAt: null },
+      origin: { baseHash: computeFlowBaseHash(liveFlow), fromSnapshot: false, snapshotCapturedAt: null },
     };
   } catch (liveReadError) {
     const snapshot = getFlowSnapshotForFlow({ envId: session.envId, flowId: session.flowId });
@@ -793,7 +793,7 @@ const fetchCurrentNormalizedFlow = async (session: TargetSession): Promise<{ flo
     return {
       flow: snapshotFlow,
       origin: {
-        baseHash: computeFlowBaseHash(snapshotFlow.flow),
+        baseHash: computeFlowBaseHash(snapshotFlow),
         fromSnapshot: true,
         snapshotCapturedAt: snapshot.capturedAt,
         warning: `This is a browser snapshot captured ${snapshot.capturedAt}, not a live read. It may miss changes made since then; apply_flow_update requires a live read and will not save until the flow page is reopened.`,

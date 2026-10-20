@@ -107,7 +107,7 @@ Use only when the trigger is manual/request based and the payload is safe.
 - `CONNECTION_AUTHORIZATION_FAILED`: stop retrying saves. The user must fix the named connector or connection permissions in Power Automate.
 - `STALE_FLOW_SNAPSHOT`: no live read was possible and the only browser snapshot is older than the last update saved through the bridge. Do not edit from it; ask the user to reopen the flow page, then call `get_flow` again.
 - `LIVE_READ_UNAVAILABLE`: `apply_flow_update` saved nothing because it could not read the current flow live. Ask the user to reopen the flow page, call `get_flow` again, rebuild the change on the live result, then retry.
-- `FLOW_BASE_MISMATCH`: the live flow changed since the `get_flow` read the edit was built on, so nothing was saved. Do not retry the same payload. Call `get_flow` again, rebuild the change on the new result, and pass its `baseHash`.
+- `FLOW_BASE_MISMATCH`: the live flow (body or display name) changed since the `get_flow` read the edit was built on, so nothing was saved. Do not retry the same payload. Call `get_flow` again, rebuild the change on the new result, and pass its `baseHash`.
 - `FLOW_NOT_FOUND`: call `list_flows` and `connect_flow`; browser-captured flows may still be usable even when the live catalog is stale.
 - Bridge port already in use: stop the existing bridge process or restart this MCP with a different `POWER_AUTOMATE_BRIDGE_PORT`. Do not assume an unknown local process is safe to reuse.
 
