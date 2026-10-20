@@ -111,6 +111,8 @@ clone_flow
 
 - Inspect with `get_context`, `connect_flow`, and `get_flow` before any write.
 - Preview with `preview_flow_update` before saving.
+- `get_flow` and `preview_flow_update` fall back to a browser-captured snapshot only when no live read is possible. Such results carry `fromSnapshot: true` and `snapshotCapturedAt`, and they are refused with `STALE_FLOW_SNAPSHOT` when the snapshot predates the last update saved through the bridge.
+- `apply_flow_update` never saves from a snapshot. Without a live read it returns `LIVE_READ_UNAVAILABLE` and saves nothing; reopen the flow page and retry.
 - Validate before and after meaningful edits when Power Automate accepts validation.
 - Review `get_last_update` after save so the diff is visible.
 - Use `revert_last_update` when the saved result is wrong.

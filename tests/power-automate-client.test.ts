@@ -280,3 +280,154 @@ describe('power automate client', () => {
     expect(client.getContextPayload().context.diagnostics.snapshotCapturedAt).toBe('2026-04-01T00:11:00.000Z');
   });
 });
+
+describe('snapshot fallback safety', () => {
+  const snapshotFlow = {
+    connectionReferences: {},
+    definition: { actions: { FromSnapshot: { inputs: 'snapshot', type: 'Compose' } }, triggers: {} },
+  };
+
+  const proposedFlow = {
+    connectionReferences: {},
+    definition: updatedFlowResponse.properties.definition,
+  };
+
+  const setupTarget = async () => {
+    const sessionStore = await import('../server/session-store.js');
+    const targetStore = await import('../server/active-target-store.js');
+    await sessionStore.saveSession(validSession);
+    await targetStore.saveActiveTarget(activeTarget);
+  };
+
+  const saveSnapshot = async (capturedAt: string) => {
+    const snapshotStore = await import('../server/flow-snapshot-store.js');
+    await snapshotStore.saveFlowSnapshot({
+      capturedAt,
+      displayName: 'Flow A',
+      envId: 'Default-123',
+      flow: snapshotFlow,
+      flowId: 'flow-a',
+      source: 'xhr-response',
+    });
+  };
+
+  const saveLastUpdateAt = async (capturedAt: string) => {
+    const helpers = await import('../server/client-helpers.js');
+    const updateStore = await import('../server/update-history-store.js');
+    const flowA = {
+      displayName: 'Flow A',
+      envId: 'Default-123',
+      flow: { connectionReferences: {}, definition: baseFlowResponse.properties.definition },
+      flowId: 'flow-a',
+    };
+    await updateStore.saveLastUpdate({
+      ...helpers.createLastUpdateRecord({ after: flowA, before: flowA }),
+      capturedAt,
+    });
+  };
+
+  const stubLiveReadUnavailable = () => {
+    const fetchMock = vi.fn(async () => createJsonResponse({ error: { code: 'Unauthorized', message: 'expired' } }, 401));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  const countPatches = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH').length;
+
+  it('marks a live read as not coming from a snapshot', async () => {
+    await setupTarget();
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    const client = await import('../server/power-automate-client.js');
+    vi.stubGlobal('fetch', vi.fn(async () => createJsonResponse(baseFlowResponse)));
+
+    const result = await client.getCurrentFlow();
+
+    expect(result.fromSnapshot).toBe(false);
+    expect(result.snapshotCapturedAt).toBeNull();
+    expect(result.flow.definition.actions).toHaveProperty('Compose');
+  });
+
+  it('returns a flagged snapshot when it is newer than the last recorded update', async () => {
+    await setupTarget();
+    await saveLastUpdateAt('2026-04-01T00:05:00.000Z');
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    const client = await import('../server/power-automate-client.js');
+    stubLiveReadUnavailable();
+
+    const result = await client.getCurrentFlow();
+
+    expect(result.fromSnapshot).toBe(true);
+    expect(result.snapshotCapturedAt).toBe('2026-04-01T00:10:00.000Z');
+    expect(result.warning).toMatch(/snapshot/i);
+    expect(result.flow.definition.actions).toHaveProperty('FromSnapshot');
+
+    const preview = await client.previewFlowUpdate({ flow: proposedFlow });
+    expect(preview.fromSnapshot).toBe(true);
+    expect(preview.snapshotCapturedAt).toBe('2026-04-01T00:10:00.000Z');
+  });
+
+  it('returns a flagged snapshot when no update has been recorded for the flow', async () => {
+    await setupTarget();
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    const client = await import('../server/power-automate-client.js');
+    stubLiveReadUnavailable();
+
+    const result = await client.getCurrentFlow();
+
+    expect(result.fromSnapshot).toBe(true);
+    expect(result.snapshotCapturedAt).toBe('2026-04-01T00:10:00.000Z');
+  });
+
+  it('refuses get_flow and preview when the only source is a snapshot older than the last update', async () => {
+    await setupTarget();
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    await saveLastUpdateAt('2026-04-01T00:20:00.000Z');
+    const client = await import('../server/power-automate-client.js');
+    stubLiveReadUnavailable();
+
+    const staleError = {
+      code: 'STALE_FLOW_SNAPSHOT',
+      details: {
+        lastUpdateCapturedAt: '2026-04-01T00:20:00.000Z',
+        snapshotCapturedAt: '2026-04-01T00:10:00.000Z',
+      },
+      retryable: true,
+    };
+
+    await expect(client.getCurrentFlow()).rejects.toMatchObject(staleError);
+    await expect(client.previewFlowUpdate({ flow: proposedFlow })).rejects.toMatchObject(staleError);
+  });
+
+  it('blocks apply without saving when only a stale snapshot is available', async () => {
+    await setupTarget();
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    await saveLastUpdateAt('2026-04-01T00:20:00.000Z');
+    const updateStore = await import('../server/update-history-store.js');
+    const client = await import('../server/power-automate-client.js');
+    const fetchMock = stubLiveReadUnavailable();
+
+    await expect(client.applyFlowUpdate({ flow: proposedFlow })).rejects.toMatchObject({
+      code: 'LIVE_READ_UNAVAILABLE',
+      message: expect.stringMatching(/reopen the flow page/i),
+      retryable: true,
+    });
+    expect(countPatches(fetchMock)).toBe(0);
+    expect(updateStore.getLastUpdate()?.capturedAt).toBe('2026-04-01T00:20:00.000Z');
+  });
+
+  it('blocks apply without saving even when a fresh snapshot exists but no live read is possible', async () => {
+    await setupTarget();
+    await saveSnapshot('2026-04-01T00:10:00.000Z');
+    const updateStore = await import('../server/update-history-store.js');
+    const client = await import('../server/power-automate-client.js');
+    const fetchMock = stubLiveReadUnavailable();
+
+    await expect(client.applyFlowUpdate({ flow: proposedFlow })).rejects.toMatchObject({
+      code: 'LIVE_READ_UNAVAILABLE',
+      retryable: true,
+    });
+    expect(countPatches(fetchMock)).toBe(0);
+    expect(updateStore.getLastUpdate()).toBeNull();
+  });
+});
