@@ -1625,14 +1625,28 @@ export const revertLastUpdate = async ({ target }: { target?: TargetRef } = {}) 
     });
   }
 
-  return applyFlowUpdate({
-    displayName: lastUpdate.before.displayName,
-    flow: lastUpdate.before.flow,
-    target: {
-      envId: session.envId,
-      flowId: session.flowId,
-    },
-  });
+  // Only revert from the state the bridge saved; otherwise the revert would discard edits made after the last update.
+  try {
+    return await applyFlowUpdate({
+      displayName: lastUpdate.before.displayName,
+      expectedBaseHash: computeFlowBaseHash(lastUpdate.after),
+      flow: lastUpdate.before.flow,
+      target: {
+        envId: session.envId,
+        flowId: session.flowId,
+      },
+    });
+  } catch (error) {
+    if (error instanceof PowerAutomateError && error.code === 'FLOW_BASE_MISMATCH') {
+      throw new PowerAutomateError({
+        code: 'FLOW_BASE_MISMATCH',
+        details: { ...(error.details as Record<string, unknown>), lastUpdateCapturedAt: lastUpdate.capturedAt },
+        message: `Nothing was reverted: the flow has changed since the last update saved through this bridge (${lastUpdate.capturedAt}), so reverting would discard those later changes. Inspect the current flow with get_flow and make any rollback as a normal reviewed edit.`,
+      });
+    }
+
+    throw error;
+  }
 };
 
 const normalizeRun = (session: TargetSession, run: AnyRecord): RunSummary => {

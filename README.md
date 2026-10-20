@@ -116,7 +116,7 @@ clone_flow
 - `get_flow` and `preview_flow_update` return a `baseHash` of the flow's display name and body. Pass it as `expectedBaseHash` to `apply_flow_update` (and optionally `preview_flow_update`); if the live flow no longer matches (including a rename), the call fails with `FLOW_BASE_MISMATCH` and nothing is saved. A hash from a snapshot that lacks the display name won't match a live read; re-read once the flow page is open.
 - Validate before and after meaningful edits when Power Automate accepts validation.
 - Review `get_last_update` after save so the diff is visible.
-- Use `revert_last_update` when the saved result is wrong.
+- Use `revert_last_update` when the saved result is wrong. It only reverts while the flow still matches what the last update saved, and otherwise fails with `FLOW_BASE_MISMATCH` instead of discarding later edits.
 - Prefer test or staging flows before production flows.
 
 If Power Automate rejects a save because of a connection permission problem, the MCP reports `CONNECTION_AUTHORIZATION_FAILED` and waits for the user to fix that connection in Power Automate. If the service rejects a field such as `retryPolicy`, the MCP reports `SCHEMA_VALIDATION_FAILED` with the rejected member so the agent can correct the candidate flow instead of guessing.

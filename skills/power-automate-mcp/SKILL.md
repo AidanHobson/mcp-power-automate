@@ -21,7 +21,7 @@ Provider notes live in [references/providers.md](references/providers.md).
 6. Call `validate_flow` before and after save when available.
 7. Call `apply_flow_update` only for the smallest intended change, passing `expectedBaseHash` set to the `baseHash` from the `get_flow` result the edit was built on.
 8. Call `get_last_update` after save and summarize the review diff.
-9. Use `revert_last_update` if the saved result is wrong.
+9. Use `revert_last_update` if the saved result is wrong. It refuses with `FLOW_BASE_MISMATCH` if the flow changed after that update; then inspect with `get_flow` and roll back as a normal reviewed edit.
 10. Prefer test or staging flows before production flows.
 
 ## Recommended Workflows

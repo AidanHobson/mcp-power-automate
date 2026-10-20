@@ -556,3 +556,75 @@ describe('expected base check', () => {
     expect(updateFlowInputSchema.safeParse({ flow: proposedFlow }).success).toBe(true);
   });
 });
+
+describe('revert_last_update base check', () => {
+  const setupTarget = async () => {
+    const sessionStore = await import('../server/session-store.js');
+    const targetStore = await import('../server/active-target-store.js');
+    await sessionStore.saveSession(validSession);
+    await targetStore.saveActiveTarget(activeTarget);
+  };
+
+  // Stateful flow service: PATCH replaces the stored flow, GET returns it.
+  const stubStatefulFlowService = (initial: typeof baseFlowResponse) => {
+    let current: unknown = initial;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        current = JSON.parse(String(init.body));
+      }
+      return createJsonResponse(current);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return {
+      fetchMock,
+      setCurrent: (next: unknown) => {
+        current = next;
+      },
+    };
+  };
+
+  const countPatches = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH').length;
+
+  it('reverts when the flow is unchanged since the last update', async () => {
+    await setupTarget();
+    const client = await import('../server/power-automate-client.js');
+    const { fetchMock } = stubStatefulFlowService(baseFlowResponse);
+
+    await client.applyFlowUpdate({
+      displayName: 'Flow B',
+      flow: { connectionReferences: {}, definition: updatedFlowResponse.properties.definition },
+    });
+    const reverted = await client.revertLastUpdate();
+
+    expect(countPatches(fetchMock)).toBe(2);
+    expect(reverted.flow.displayName).toBe('Flow A');
+    expect(reverted.flow.flow.definition.actions).toHaveProperty('Compose');
+  });
+
+  it('refuses to revert without saving when the flow changed after the last update', async () => {
+    await setupTarget();
+    const updateStore = await import('../server/update-history-store.js');
+    const client = await import('../server/power-automate-client.js');
+    const { fetchMock, setCurrent } = stubStatefulFlowService(baseFlowResponse);
+
+    await client.applyFlowUpdate({
+      displayName: 'Flow B',
+      flow: { connectionReferences: {}, definition: updatedFlowResponse.properties.definition },
+    });
+    const savedUpdate = updateStore.getLastUpdate();
+    setCurrent({
+      properties: {
+        ...updatedFlowResponse.properties,
+        definition: { actions: { EditedInDesigner: { inputs: 'later', type: 'Compose' } }, triggers: {} },
+      },
+    });
+
+    await expect(client.revertLastUpdate()).rejects.toMatchObject({
+      code: 'FLOW_BASE_MISMATCH',
+      message: expect.stringMatching(/revert/i),
+    });
+    expect(countPatches(fetchMock)).toBe(1);
+    expect(updateStore.getLastUpdate()).toEqual(savedUpdate);
+  });
+});
